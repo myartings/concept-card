@@ -1,0 +1,135 @@
+#!/bin/bash
+# concept-card-gen - 概念卡片生成器（4页结构 + 自动发布 Artifact）
+# 用法: concept-card-gen <概念词>
+# 流程: 搜索wiki → Agent分析 → 渲染 → 发布到 Artifact Library
+set -euo pipefail
+
+TERM="$1"
+SLUG=$(echo "$TERM" | tr '[:upper:]' '[:lower:]' | tr -d ' ' | head -c 30)
+DATE_TAG=$(date +%Y-%m-%d)
+PKG_DIR="/tmp/concept-${SLUG}-pkg"
+HTML_FILE="/tmp/concept-${SLUG}.html"
+FINAL_MD="/tmp/concept-${SLUG}-final.md"
+
+# 如已有分析好的markdown，走渲染+发布链路
+if [ -f "$FINAL_MD" ]; then
+  echo "→ 渲染: ${FINAL_MD}"
+
+  # 生成 package（含 HTML + source + preview + meta）
+  cat "$FINAL_MD" | html-render --fast --template deck-simple-fast --package "$PKG_DIR" 2>&1
+  echo "→ Package: ${PKG_DIR}"
+
+  # 复制到 Sync
+  cp "${PKG_DIR}/output.html" "${HTML_FILE}"
+  cp "${HTML_FILE}" "$HOME/Sync/docs/"
+
+  # 发布到 Artifact Library
+  echo "→ 发布到 Artifact Library..."
+  PUBLISH_OUT=$(HTML_ARTIFACT_PUBLISH_URL=http://127.0.0.1:3220/v1/artifacts/import-package \
+    html-artifact-publish \
+    --package "$PKG_DIR" \
+    --title "${TERM} 概念卡片" \
+    --type concept-card \
+    --category concept-card \
+    --tags "${SLUG},concept,concept-card" \
+    --visibility shared \
+    --overwrite \
+    --summary "${TERM} 概念卡片（deck-simple-fast 模板）" \
+    --agent openclaw \
+    --json 2>&1)
+
+  # 提取 URL
+  VIEW_URL=$(echo "$PUBLISH_OUT" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(d.get('viewUrl',''))" 2>/dev/null || echo "")
+  GALLERY_URL=$(echo "$PUBLISH_OUT" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(d.get('galleryUrl',''))" 2>/dev/null || echo "")
+
+  echo ""
+  echo "✅ 完成"
+  echo "  本地:  ~/Sync/docs/concept-${SLUG}.html"
+  echo "  Artifact: ${VIEW_URL:-发布失败}"
+  echo "  画廊:   ${GALLERY_URL}"
+  exit 0
+fi
+
+# 第一步：搜索wiki
+echo "→ 搜索wiki: $TERM"
+concept-to-html "$TERM" > /dev/null 2>&1
+WIKI_FILE="/tmp/concept-${SLUG}.md"
+
+# 判断wiki是否有结果
+HAS_WIKI=false
+if [ -f "$WIKI_FILE" ]; then
+  FILE_MATCH=$(grep -c "\[高\]\|文件名匹配" "$WIKI_FILE" 2>/dev/null || true)
+  CONTENT_MATCH=$(grep -c "\[中\]" "$WIKI_FILE" 2>/dev/null || true)
+  if [ "$FILE_MATCH" -gt 1 ] || [ "$CONTENT_MATCH" -gt 0 ]; then
+    HAS_WIKI=true
+  fi
+fi
+
+if [ "$HAS_WIKI" = true ]; then
+  SOURCE_NOTE="Wiki 知识库"
+else
+  echo "→ Wiki无数据，Agent需搜外网补充（V2EX → 知乎 → 微信 → Bing CN）"
+  SOURCE_NOTE="外部搜索"
+fi
+
+# 生成模板
+cat > "$FINAL_MD" << DECK
+# ${TERM}
+
+source:
+- article_type: concept
+- source_type: $(if [ "$HAS_WIKI" = true ]; then echo "wiki"; else echo "web"; fi)
+
+## core-thesis
+
+### 1 ${TERM} 封面
+- kind: cover
+- title: ${TERM}
+- subtitle: (分类树)
+- takeaway: (一句话定义)
+- footer_source: ${SOURCE_NOTE}
+
+### 2 就像 (类比对象)
+- kind: thesis
+- title: 就像 (类比对象)
+- takeaway: (类比的核心描述)
+- bullets:
+  - (切入点1)
+  - (切入点2)
+  - (切入点3)
+  - (切入点4)
+
+### 3 ${TERM} vs (对比对象)
+- kind: comparison
+- title: ${TERM} vs (对比对象)
+- takeaway: (对比总结)
+- bullets:
+  - (本概念特点1)
+  - (本概念特点2)
+  - (本概念特点3)
+  - (本概念特点4)
+  - (对比概念特点1)
+  - (对比概念特点2)
+  - (对比概念特点3)
+  - (对比概念特点4)
+
+### 4 收束
+- kind: closing
+- title: (行动标题)
+- takeaway: (核心建议)
+- bullets:
+  - (行动1)
+  - (行动2)
+  - (行动3)
+DECK
+
+echo ""
+echo "→ 模板已生成: ${FINAL_MD}"
+if [ "$HAS_WIKI" = false ]; then
+  echo "⚠️  wiki 无记录，搜外网参考:"
+  echo "   python3 ~/.openclaw/skills/v2ex/scripts/v2ex_client.py search \"${TERM}\""
+  echo "   python3 ~/.openclaw/skills/zhihu/scripts/zhihu_client.py search \"${TERM}\""
+  echo "   web_fetch('https://cn.bing.com/search?q=${TERM}')"
+fi
+echo ""
+echo "→ 补充内容后重新运行 concept-card-gen \"${TERM}\" 即可渲染并发布"

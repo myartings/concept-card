@@ -1,0 +1,57 @@
+#!/bin/bash
+# ~/.local/bin/concept-to-html
+# 概念分类系统全流程：搜索wiki → 提取关键内容 → 输出供Agent分析的结构化数据
+# Usage: concept-to-html <term>
+# Output: 写入 /tmp/concept-<term>.md 供Agent读取分析后渲染
+set -euo pipefail
+
+TERM="$1"
+WIKI_DIR="$HOME/Documents/knowledge-base/wiki"
+OUT="/tmp/concept-$(echo "$TERM" | tr 'A-Z ' 'a-z-').md"
+
+if [ -z "$TERM" ]; then
+  echo "Usage: concept-to-html <term>"
+  exit 1
+fi
+
+echo "=== CONCEPT: $TERM ===" > "$OUT"
+echo "" >> "$OUT"
+
+# 1. 文件名精确匹配
+echo "## 文件匹配" >> "$OUT"
+FILES=$(find "$WIKI_DIR" -maxdepth 3 -type f -iname "*${TERM}*.md" -not -path '*/node_modules/*' | head -10)
+if [ -n "$FILES" ]; then
+  echo "$FILES" >> "$OUT"
+else
+  echo "（无精确文件名匹配）" >> "$OUT"
+fi
+echo "" >> "$OUT"
+
+# 2. 内容匹配（带相关性排序——文件名中有term的优先）
+echo "## 内容匹配（按相关性排序）" >> "$OUT"
+rg -l -i "${TERM}" "$WIKI_DIR" --glob '*.md' -S -m 1 \
+  | head -20 \
+  | while read -r f; do
+      # 文件名含term的排前面
+      base=$(basename "$f" .md)
+      if echo "$base" | rg -i -q "$TERM"; then
+        echo "[高] $f"
+      else
+        echo "[中] $f"
+      fi
+    done >> "$OUT"
+echo "" >> "$OUT"
+
+# 3. 关键摘要（每文件5行）
+echo "## 关键摘要" >> "$OUT"
+rg -i -n "${TERM}" "$WIKI_DIR" --glob '*.md' -S -m 5 | head -40 >> "$OUT"
+echo "" >> "$OUT"
+
+# 4. 相关实体/概念（找出和它并列/对比的关系）
+echo "## 关联概念" >> "$OUT"
+rg -i -n "contrasts_with|similar_to|related_to|vs\.|对比|VS" "$WIKI_DIR" --glob '*.md' -S -m 1 \
+  | rg -i "$TERM" | head -10 >> "$OUT" || echo "（无线索）" >> "$OUT"
+
+echo "" >> "$OUT"
+echo "---" >> "$OUT"
+echo "Output ready: $OUT"
